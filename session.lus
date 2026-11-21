@@ -1,0 +1,261 @@
+--- Keeps per-client state for `web` applications behind a signed cookie.
+---
+--- The plugin gives every request a `req.session` table. Values that a
+--- handler stores in it come back on the next request of the same client.
+--- The cookie holds only a random session identifier signed with
+--- HMAC-SHA-256. The data lives in a store, in memory by default.
+---
+--- @package session
+--- @version 0.1.0
+--- @lus 2.0
+--- @license 0BSD
+--- @repository https://github.com/lus-lang/atmos-session
+
+local cookie = require("https://atmosp.here/2.0/cookie.lus")
+
+local M = {}
+
+-- Stores ------------------------------------------------------------------------
+
+local MemoryStore = {}
+MemoryStore.__index = MemoryStore
+
+--- Returns a store that keeps sessions in memory.
+---
+--- A session expires `ttl` seconds after it was last saved. When the store
+--- holds `max` sessions, saving a new one first removes the expired ones,
+--- then the one saved longest ago. `max` defaults to 10000. The sessions are
+--- lost when the program ends.
+--- @param options table? `max`, and `clock`, a function that returns the time in seconds, which defaults to `os.time`.
+--- @return table
+function M.memory(options)
+    options = options or {}
+    return setmetatable({
+        entries = {},
+        count = 0,
+        max = options.max or 10000,
+        clock = options.clock or os.time,
+    }, MemoryStore)
+end
+
+function MemoryStore:get(id)
+    local entry = self.entries[id]
+    if entry == nil then
+        return nil
+    end
+    if entry.expires <= self.clock() then
+        self:destroy(id)
+        return nil
+    end
+    return fromjson(entry.data)
+end
+
+function MemoryStore:set(id, data, ttl)
+    local now = self.clock()
+    if self.entries[id] == nil then
+        if self.count >= self.max then
+            local oldest, oldest_time
+            for key, entry in pairs(self.entries) do
+                if entry.expires <= now then
+                    self:destroy(key)
+                elseif oldest_time == nil or entry.saved < oldest_time then
+                    oldest, oldest_time = key, entry.saved
+                end
+            end
+            if self.count >= self.max and oldest then
+                self:destroy(oldest)
+            end
+        end
+        self.count = self.count + 1
+    end
+    self.entries[id] = { data = tojson(data), expires = now + ttl, saved = now }
+end
+
+function MemoryStore:destroy(id)
+    if self.entries[id] ~= nil then
+        self.entries[id] = nil
+        self.count = self.count - 1
+    end
+end
+
+-- Identifiers -------------------------------------------------------------------
+
+local function new_id()
+    local bytes = crypto.random(18)
+    local text = string.transcode(bytes, "binary", "base64")
+    return (text:gsub("+", "-"):gsub("/", "_"))
+end
+
+-- Requests ----------------------------------------------------------------------
+
+-- The state of one request lives in a table that the hooks share through the
+-- request. `req.session` is the data table that handlers read and write.
+local KEY = {}
+
+--- Replaces the session identifier of the request with a new one and keeps
+--- the data.
+---
+--- Call it after a login, so an identifier that an attacker planted before
+--- the login gives no access afterward.
+--- @param req table The request.
+function M.regenerate(req)
+    local state = req[KEY]
+    if state == nil then
+        error("session.regenerate: the session plugin is not registered for this route", 2)
+    end
+    state.old_id = state.old_id or state.id
+    state.id = nil
+    state.regenerated = true
+end
+
+--- Ends the session of the request.
+---
+--- The store forgets the session and the response clears the cookie. A
+--- later value stored in `req.session` during the same request is dropped.
+--- @param req table The request.
+function M.destroy(req)
+    local state = req[KEY]
+    if state == nil then
+        error("session.destroy: the session plugin is not registered for this route", 2)
+    end
+    state.destroyed = true
+end
+
+--- Returns the session identifier of the request, or `nil` before the
+--- session is first saved.
+--- @param req table The request.
+--- @return string?
+function M.id(req)
+    local state = req[KEY]
+    return state and state.id
+end
+
+local function add_cookie(headers, value)
+    local out = {}
+    local existing
+    if headers then
+        for k, v in pairs(headers) do
+            if type(k) == "string" and k:lower() == "set-cookie" then
+                existing = v
+            else
+                out[k] = v
+            end
+        end
+    end
+    if existing == nil then
+        out["Set-Cookie"] = value
+    elseif type(existing) == "table" then
+        local list = {}
+        for i, v in ipairs(existing) do
+            list[i] = v
+        end
+        list[#list + 1] = value
+        out["Set-Cookie"] = list
+    else
+        out["Set-Cookie"] = { existing, value }
+    end
+    return out
+end
+
+--- Registers the session plugin on a `web` scope.
+---
+--- The options are the following.
+---
+--- - `secret`: the key that signs the cookie, a string or a list of strings
+---   whose first entry signs and every entry verifies. It is required.
+--- - `ttl`: how many seconds a session lives after it was last saved, 86400
+---   by default.
+--- - `name`: the cookie name, `"sid"` by default.
+--- - `store`: a table with `get(id)`, `set(id, data, ttl)`, and
+---   `destroy(id)`. The default is `session.memory()`.
+--- - `cookie`: the attributes of the cookie for `cookie.format`. The default
+---   is `{ path = "/", http_only = true, same_site = "lax" }`.
+--- - `rolling`: `true` to send the cookie on every response, which renews
+---   its lifetime. Otherwise the cookie is sent when the identifier changes.
+---
+--- A session is saved when a handler changed `req.session`, and only when it
+--- holds at least one value. The plugin applies to the scope that registers
+--- it.
+--- @param scope table The `web` scope.
+--- @param options table The options.
+function M.register(scope, options)
+    options = options or {}
+    local secret = options.secret
+    if secret == nil then
+        error("session: the secret option is required", 2)
+    end
+    local signing = type(secret) == "table" and secret[1] or secret
+    local ttl = options.ttl or 86400
+    local name = options.name or "sid"
+    local store = options.store or M.memory()
+    local attrs = { path = "/", http_only = true, same_site = "lax" }
+    for k, v in pairs(options.cookie or {}) do
+        attrs[k] = v
+    end
+    attrs.max_age = ttl
+    local rolling = options.rolling
+
+    scope:hook("on_request", function(req)
+        local signed = cookie.parse(req.headers.cookie)[name]
+        local id = signed and cookie.unsign(signed, secret)
+        local data = id and store:get(id)
+        if data == nil then
+            id = nil
+            data = {}
+        end
+        req[KEY] = { id = id, before = tojson(data), had_cookie = signed ~= nil }
+        req.session = data
+    end)
+
+    scope:hook("on_send", function(req, status, body, headers)
+        local state = req[KEY]
+        if state == nil then
+            return status, body, headers
+        end
+        if state.destroyed then
+            local id = state.id or state.old_id
+            if id then
+                store:destroy(id)
+            end
+            if state.had_cookie then
+                local clear = {}
+                for k, v in pairs(attrs) do
+                    clear[k] = v
+                end
+                clear.max_age = 0
+                clear.expires = 0
+                headers = add_cookie(headers, cookie.format(name, "", clear))
+            end
+            return status, body, headers
+        end
+        local data = req.session
+        local now = tojson(data)
+        local changed = now ~= state.before or state.regenerated
+        if state.old_id then
+            store:destroy(state.old_id)
+        end
+        if next(data) == nil then
+            if state.id and changed then
+                store:destroy(state.id)
+            end
+            return status, body, headers
+        end
+        local fresh = false
+        if state.id == nil then
+            state.id = new_id()
+            fresh = true
+        end
+        if changed or fresh or rolling then
+            store:set(state.id, data, ttl)
+        end
+        if fresh or rolling then
+            headers = add_cookie(headers, cookie.format(name, cookie.sign(state.id, signing), attrs))
+        end
+        return status, body, headers
+    end)
+end
+
+--- Registers into the scope that calls `register`.
+M.shared = true
+
+return M
