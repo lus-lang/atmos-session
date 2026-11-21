@@ -4,16 +4,9 @@ pledge("load", "fs:read=" .. PACKAGES .. "/*")
 package.path = ROOT .. "/?.lus;"
     .. PACKAGES .. "/cookie/?.lus;" .. PACKAGES .. "/atmos-cookie/?.lus;"
     .. PACKAGES .. "/web/?.lus;" .. PACKAGES .. "/atmos-web/?.lus;" .. package.path
--- The package requires cookie by its atmosphere URL. A URL require goes to
--- the remote loader before package.preload, so the tests replace require to
--- load the checkout next to this one in its place.
-local real_require = require
-_G.require = function(name)
-    if name == "https://atmosp.here/2.0/cookie.lus" then
-        return real_require("cookie")
-    end
-    return real_require(name)
-end
+-- The package requires cookie by its atmosphere URL. The tests load the
+-- checkout next to this one in its place.
+package.preload["https://atmosp.here/2.0/cookie.lus"] = function() return require("cookie") end
 
 local session = require("session")
 local web = require("web")
