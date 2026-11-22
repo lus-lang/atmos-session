@@ -1,6 +1,8 @@
 # session
 
-Keeps per-client state for `web` applications behind a signed cookie.
+`session` keeps per-client state for `web` applications and identifies each client with a signed cookie.
+
+The following example counts the visits of each client.
 
 ```lus nocheck
 local web = require("https://atmosp.here/2.0/web.lus")
@@ -14,6 +16,6 @@ app:post("/visit", function(req)
 end)
 ```
 
-The package requires Lus 2.0. It declares no permissions. It calls no `pledge` of its own, so the program that loads it keeps control of its permissions.
+The package requires Lus 2.0 and declares no permissions. It never calls `pledge`, so the program that loads it keeps control of its permissions.
 
-The reference is in the doc comments of `session.lus`. Run `lus doc session.lus` to print it.
+The reference is in the doc comments of `session.lus`, which `lus doc session.lus` prints.

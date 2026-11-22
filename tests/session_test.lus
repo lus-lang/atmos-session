@@ -1,9 +1,7 @@
 local ROOT = string.match(TEST_DIR, "^(.*)[/\\][^/\\]*$")
 local PACKAGES = string.match(ROOT, "^(.*)[/\\][^/\\]*$")
-pledge("load", "fs:read=" .. PACKAGES .. "/*")
-package.path = ROOT .. "/?.lus;"
-    .. PACKAGES .. "/cookie/?.lus;" .. PACKAGES .. "/atmos-cookie/?.lus;"
-    .. PACKAGES .. "/web/?.lus;" .. PACKAGES .. "/atmos-web/?.lus;" .. package.path
+pledge("load", `fs:read=$PACKAGES/*`)
+package.path = `$ROOT/?.lus;$PACKAGES/cookie/?.lus;$PACKAGES/atmos-cookie/?.lus;$PACKAGES/web/?.lus;$PACKAGES/atmos-web/?.lus;$(package.path)`
 -- The package requires cookie by its atmosphere URL. The tests load the
 -- checkout next to this one in its place.
 package.preload["https://atmosp.here/2.0/cookie.lus"] = function() return require("cookie") end

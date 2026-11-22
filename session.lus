@@ -1,12 +1,13 @@
---- Keeps per-client state for `web` applications behind a signed cookie.
+--- Keeps per-client state for `web` applications and identifies each client
+--- with a signed cookie.
 ---
---- The plugin gives every request a `req.session` table. Values that a
---- handler stores in it come back on the next request of the same client.
---- The cookie holds only a random session identifier signed with
---- HMAC-SHA-256. The data lives in a store, in memory by default.
+--- The plugin gives every request a `req.session` table, whose values are
+--- available again on the next request from the same client. The cookie
+--- holds only a random session identifier signed with HMAC-SHA-256, while a
+--- store keeps the data, in memory by default.
 ---
 --- @package session
---- @version 0.1.0
+--- @version 1.0.0
 --- @lus 2.0
 --- @license 0BSD
 --- @repository https://github.com/lus-lang/atmos-session
@@ -22,11 +23,11 @@ MemoryStore.__index = MemoryStore
 
 --- Returns a store that keeps sessions in memory.
 ---
---- A session expires `ttl` seconds after it was last saved. When the store
---- holds `max` sessions, saving a new one first removes the expired ones,
---- then the one saved longest ago. `max` defaults to 10000. The sessions are
---- lost when the program ends.
---- @param options table? `max`, and `clock`, a function that returns the time in seconds, which defaults to `os.time`.
+--- A session expires `ttl` seconds after its last save. When the store
+--- holds `max` sessions, 10000 by default, saving a new one first removes
+--- the expired ones, then, if the store is still full, the one saved
+--- longest ago. The sessions are lost when the program ends.
+--- @param options table? The fields `max` and `clock`. `clock` returns the current time in seconds and defaults to `os.time`.
 --- @return table
 function M.memory(options)
     options = options or {}
@@ -88,15 +89,17 @@ end
 
 -- Requests ----------------------------------------------------------------------
 
--- The state of one request lives in a table that the hooks share through the
--- request. `req.session` is the data table that handlers read and write.
+-- The hooks keep the state of one request in a table stored in the request
+-- under this key. `req.session` is the data table that handlers read and
+-- write.
 local KEY = {}
 
 --- Replaces the session identifier of the request with a new one and keeps
 --- the data.
 ---
 --- Call it after a login, so an identifier that an attacker planted before
---- the login gives no access afterward.
+--- the login gives no access afterward. A call on a route without the
+--- session plugin raises an error.
 --- @param req table The request.
 function M.regenerate(req)
     local state = req[KEY]
@@ -110,8 +113,10 @@ end
 
 --- Ends the session of the request.
 ---
---- The store forgets the session and the response clears the cookie. A
---- later value stored in `req.session` during the same request is dropped.
+--- The store deletes the session when the response is sent. If the client
+--- sent a session cookie, the response also clears it. Values stored in
+--- `req.session` later in the same request are discarded. A call on a route
+--- without the session plugin raises an error.
 --- @param req table The request.
 function M.destroy(req)
     local state = req[KEY]
@@ -162,8 +167,9 @@ end
 --- The options are the following.
 ---
 --- - `secret`: the key that signs the cookie, a string or a list of strings
----   whose first entry signs and every entry verifies. It is required.
---- - `ttl`: how many seconds a session lives after it was last saved, 86400
+---   whose first entry signs and every entry verifies. A missing `secret`
+---   raises an error.
+--- - `ttl`: the number of seconds a session lasts after its last save, 86400
 ---   by default.
 --- - `name`: the cookie name, `"sid"` by default.
 --- - `store`: a table with `get(id)`, `set(id, data, ttl)`, and
@@ -171,11 +177,12 @@ end
 --- - `cookie`: the attributes of the cookie for `cookie.format`. The default
 ---   is `{ path = "/", http_only = true, same_site = "lax" }`.
 --- - `rolling`: `true` to send the cookie on every response, which renews
----   its lifetime. Otherwise the cookie is sent when the identifier changes.
+---   its lifetime. Otherwise the cookie is sent only when the identifier
+---   changes.
 ---
---- A session is saved when a handler changed `req.session`, and only when it
---- holds at least one value. The plugin applies to the scope that registers
---- it.
+--- The plugin saves the session when a handler changed `req.session`, or on
+--- every response when `rolling` is `true`. A session that holds no value is
+--- never saved. Emptying `req.session` deletes the stored session.
 --- @param scope table The `web` scope.
 --- @param options table The options.
 function M.register(scope, options)
@@ -254,7 +261,8 @@ function M.register(scope, options)
     end)
 end
 
---- Registers into the scope that calls `register`.
+--- `true`, so `scope:register(session)` applies the plugin to every route of
+--- `scope`.
 M.shared = true
 
 return M
