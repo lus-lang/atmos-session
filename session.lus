@@ -213,8 +213,7 @@ function M.register(scope, options)
             return status, body, headers
         end
         if state.destroyed then
-            local id = state.id or state.old_id
-            if id then
+            if id = state.id or state.old_id then
                 store:destroy(id)
             end
             if state.had_cookie then

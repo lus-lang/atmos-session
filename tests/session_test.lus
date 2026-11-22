@@ -22,8 +22,7 @@ end
 
 local function sid_of(res)
     for _, line in ipairs(cookies_of(res)) do
-        local pair = line:match("^(sid=[^;]*)")
-        if pair then
+        if pair = line:match("^(sid=[^;]*)") then
             return pair, line
         end
     end
