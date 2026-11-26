@@ -6,6 +6,21 @@
 --- holds only a random session identifier signed with HMAC-SHA-256, while a
 --- store keeps the data, in memory by default.
 ---
+--- The following application counts the visits of each client.
+---
+--- ```lus nocheck
+--- local web = require("https://atmosp.here/2.0/web.lus")
+--- local session = require("https://atmosp.here/2.0/session.lus")
+---
+--- local app = web.app()
+--- app:register(session, { secret = "a long random secret" })
+---
+--- app:post("/visit", function(req)
+---     req.session.visits = (req.session.visits or 0) + 1
+---     return { visits = req.session.visits }
+--- end)
+--- ```
+---
 --- @package session
 --- @version 1.0.0
 --- @lus 2.0
@@ -27,35 +42,43 @@ MemoryStore.__index = MemoryStore
 --- holds `max` sessions, 10000 by default, saving a new one first removes
 --- the expired ones, then, if the store is still full, the one saved
 --- longest ago. The sessions are lost when the program ends.
---- @param options table? The fields `max` and `clock`. `clock` returns the current time in seconds and defaults to `os.time`.
+--- @param options table? The fields `max` and `clock`. `clock` returns the current Unix time in seconds and defaults to `time.now():epoch()`.
 --- @return table
 function M.memory(options)
     options = options or {}
+
     return setmetatable({
         entries = {},
         count = 0,
         max = options.max or 10000,
-        clock = options.clock or os.time,
+        clock = options.clock or function()
+            return time.now():epoch()
+        end,
     }, MemoryStore)
 end
 
 function MemoryStore:get(id)
     local entry = self.entries[id]
+
     if entry == nil then
         return nil
     end
+
     if entry.expires <= self.clock() then
         self:destroy(id)
         return nil
     end
+
     return fromjson(entry.data)
 end
 
 function MemoryStore:set(id, data, ttl)
     local now = self.clock()
+
     if self.entries[id] == nil then
         if self.count >= self.max then
             local oldest, oldest_time
+
             for key, entry in pairs(self.entries) do
                 if entry.expires <= now then
                     self:destroy(key)
@@ -63,12 +86,15 @@ function MemoryStore:set(id, data, ttl)
                     oldest, oldest_time = key, entry.saved
                 end
             end
+
             if self.count >= self.max and oldest then
                 self:destroy(oldest)
             end
         end
+
         self.count = self.count + 1
     end
+
     self.entries[id] = { data = tojson(data), expires = now + ttl, saved = now }
 end
 
@@ -103,9 +129,11 @@ local KEY = {}
 --- @param req table The request.
 function M.regenerate(req)
     local state = req[KEY]
+
     if state == nil then
         error("session.regenerate: the session plugin is not registered for this route", 2)
     end
+
     state.old_id = state.old_id or state.id
     state.id = nil
     state.regenerated = true
@@ -120,9 +148,11 @@ end
 --- @param req table The request.
 function M.destroy(req)
     local state = req[KEY]
+
     if state == nil then
         error("session.destroy: the session plugin is not registered for this route", 2)
     end
+
     state.destroyed = true
 end
 
@@ -132,12 +162,13 @@ end
 --- @return string?
 function M.id(req)
     local state = req[KEY]
-    return state and state.id
+    return state?.id
 end
 
 local function add_cookie(headers, value)
     local out = {}
     local existing
+
     if headers then
         for k, v in pairs(headers) do
             if type(k) == "string" and k:lower() == "set-cookie" then
@@ -147,18 +178,17 @@ local function add_cookie(headers, value)
             end
         end
     end
+
     if existing == nil then
         out["Set-Cookie"] = value
     elseif type(existing) == "table" then
-        local list = {}
-        for i, v in ipairs(existing) do
-            list[i] = v
-        end
+        local list = table.clone(existing)
         list[#list + 1] = value
         out["Set-Cookie"] = list
     else
         out["Set-Cookie"] = { existing, value }
     end
+
     return out
 end
 
@@ -188,17 +218,21 @@ end
 function M.register(scope, options)
     options = options or {}
     local secret = options.secret
+
     if secret == nil then
         error("session: the secret option is required", 2)
     end
+
     local signing = type(secret) == "table" and secret[1] or secret
     local ttl = options.ttl or 86400
     local name = options.name or "sid"
     local store = options.store or M.memory()
     local attrs = { path = "/", http_only = true, same_site = "lax" }
+
     for k, v in pairs(options.cookie or {}) do
         attrs[k] = v
     end
+
     attrs.max_age = ttl
     local rolling = options.rolling
 
@@ -206,57 +240,72 @@ function M.register(scope, options)
         local signed = cookie.parse(req.headers.cookie)[name]
         local id = signed and cookie.unsign(signed, secret)
         local data = id and store:get(id)
+
         if data == nil then
             id = nil
             data = {}
         end
+
         req[KEY] = { id = id, before = tojson(data), had_cookie = signed ~= nil }
         req.session = data
     end)
 
     scope:hook("on_send", function(req, status, body, headers)
         local state = req[KEY]
+
         if state == nil then
             return status, body, headers
         end
+
         if state.destroyed then
             if id = state.id or state.old_id then
                 store:destroy(id)
             end
+
             if state.had_cookie then
-                local clear = {}
-                for k, v in pairs(attrs) do
-                    clear[k] = v
-                end
+                local clear = table.clone(attrs)
                 clear.max_age = 0
                 clear.expires = 0
                 headers = add_cookie(headers, cookie.format(name, "", clear))
             end
+
             return status, body, headers
         end
+
         local data = req.session
         local now = tojson(data)
         local changed = now ~= state.before or state.regenerated
+
         if state.old_id then
             store:destroy(state.old_id)
         end
+
         if next(data) == nil then
             if state.id and changed then
                 store:destroy(state.id)
             end
+
             return status, body, headers
         end
+
         local fresh = false
+
         if state.id == nil then
             state.id = new_id()
             fresh = true
         end
+
         if changed or fresh or rolling then
             store:set(state.id, data, ttl)
         end
+
         if fresh or rolling then
-            headers = add_cookie(headers, cookie.format(name, cookie.sign(state.id, signing), attrs))
+            headers = add_cookie(
+                headers,
+                cookie.format(name, cookie.sign(state.id, signing), attrs)
+            )
         end
+
         return status, body, headers
     end)
 end

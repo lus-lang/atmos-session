@@ -2,9 +2,12 @@ local ROOT = string.match(TEST_DIR, "^(.*)[/\\][^/\\]*$")
 local PACKAGES = string.match(ROOT, "^(.*)[/\\][^/\\]*$")
 pledge("load", `fs:read=$PACKAGES/*`)
 package.path = `$ROOT/?.lus;$PACKAGES/cookie/?.lus;$PACKAGES/atmos-cookie/?.lus;$PACKAGES/web/?.lus;$PACKAGES/atmos-web/?.lus;$(package.path)`
+
 -- The package requires cookie by its atmosphere URL. The tests load the
 -- checkout next to this one in its place.
-package.preload["https://atmosp.here/2.0/cookie.lus"] = function() return require("cookie") end
+package.preload["https://atmosp.here/2.0/cookie.lus"] = function()
+    return require("cookie")
+end
 
 local session = require("session")
 local web = require("web")
@@ -12,9 +15,11 @@ local cookie = require("cookie")
 
 local function cookies_of(res)
     local set = res.headers["set-cookie"]
+
     if set == nil then
         return {}
     end
+
     return type(set) == "table" and set or { set }
 end
 
@@ -24,6 +29,7 @@ local function sid_of(res)
             return pair, line
         end
     end
+
     return nil
 end
 
@@ -32,20 +38,27 @@ local function make_app(options)
     options = options or {}
     options.secret = options.secret or "test secret"
     app:register(session, options)
+
     app:post("/login", function(req)
         session.regenerate(req)
         req.session.user = "ada"
         return 204
     end)
-    app:get("/me", function(req) return { user = req.session.user, visits = req.session.visits } end)
+
+    app:get("/me", function(req)
+        return { user = req.session.user, visits = req.session.visits }
+    end)
+
     app:post("/visit", function(req)
         req.session.visits = (req.session.visits or 0) + 1
         return { visits = req.session.visits }
     end)
+
     app:post("/logout", function(req)
         session.destroy(req)
         return 204
     end)
+
     return app
 end
 
@@ -86,10 +99,15 @@ end
 local function regenerate_changes_id_test()
     local app = make_app()
     local first = sid_of(app:inject({ method = "POST", path = "/visit" }))
-    local second = sid_of(app:inject({ method = "POST", path = "/login", headers = { Cookie = first } }))
+    local second = sid_of(
+        app:inject({ method = "POST", path = "/login", headers = { Cookie = first } })
+    )
     assert(second and second ~= first)
     assert(app:inject({ path = "/me", headers = { Cookie = second } }):json().visits == 1)
-    assert(app:inject({ path = "/me", headers = { Cookie = first } }):json().visits == nil, "old id is gone")
+    assert(
+        app:inject({ path = "/me", headers = { Cookie = first } }):json().visits == nil,
+        "old id is gone"
+    )
 end
 
 local function destroy_test()
@@ -111,11 +129,13 @@ local function with_app_cookie_test()
     local app = web.app()
     app:register(cookie)
     app:register(session, { secret = "s" })
+
     app:post("/", function(req, reply)
         reply:cookie("theme", "dark")
         req.session.n = 1
         return 204
     end)
+
     local set = cookies_of(app:inject({ method = "POST", path = "/" }))
     assert(#set == 2)
     assert(set[1]:find("^theme=dark"))
@@ -124,7 +144,14 @@ end
 
 local function memory_store_test()
     local now = 1000
-    local store = session.memory({ max = 2, clock = function() return now end })
+
+    local store = session.memory({
+        max = 2,
+        clock = function()
+            return now
+        end,
+    })
+
     store:set("a", { v = 1 }, 10)
     store:set("b", { v = 2 }, 10)
     now = 1001
@@ -145,14 +172,20 @@ local function over_the_wire_test()
     local app = web.app()
     app:register(cookie)
     app:register(session, { secret = "s" })
+
     app:post("/", function(req, reply)
         reply:cookie("theme", "dark")
         req.session.n = 1
         return 204
     end)
+
     local server = network.tcp.bind("127.0.0.1", 0)
     local _, port = server:getsockname()
-    local serving = coroutine.detach(coroutine.create(function() app:listen(server) end))
+
+    local serving = coroutine.detach(coroutine.create(function()
+        app:listen(server)
+    end))
+
     local sock <close> = network.tcp.connect("127.0.0.1", port)
     sock:send("POST / HTTP/1.1\r\nHost: l\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
     local response = vector.tostring(sock:receive("*a"))
